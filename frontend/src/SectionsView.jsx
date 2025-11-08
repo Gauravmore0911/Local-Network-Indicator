@@ -1,19 +1,43 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { socket } from "./socket";
+import { useNavigate, useSearchParams, useParams } from "react-router-dom";
+import { socket, SOCKET_URL } from "./socket.jsx";
 import "bootstrap/dist/css/bootstrap.min.css";
-import "./App.css";
 
-const StatusDot = ({ color }) => (
-  <span className={`status-dot ${color || "red"}`}></span>
-);
+const StatusDot = ({ color }) => {
+  const bg = color === "green" ? "#28a745" : color === "orange" ? "#fd7e14" : "#dc3545";
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        height: 14,
+        width: 14,
+        borderRadius: "50%",
+        marginLeft: 6,
+        border: "1px solid #333",
+        verticalAlign: "middle",
+        backgroundColor: bg,
+      }}
+    />
+  );
+};
 
 export default function SectionsView() {
   const [machines, setMachines] = useState([]);
   const [filterBySection, setFilterBySection] = useState({});
   const [selectedMachine, setSelectedMachine] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  const { section: sectionParam } = useParams();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const API_BASE = SOCKET_URL === "/" ? "" : SOCKET_URL;
+    fetch(`${API_BASE}/api/machines`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.data?.machines) setMachines(j.data.machines);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const handleNetwork = (data) => {
@@ -42,16 +66,13 @@ export default function SectionsView() {
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(m);
     }
-    // sort each group by name
     for (const [_k, arr] of map) {
       arr.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     }
-    // return as array of [section, items] sorted by section
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [machines]);
 
   const getOverallColor = (m) => {
-    // prefer machine ip color, then gateway, then kiosk
     return (
       m.results?.ip?.color ||
       m.results?.gateway?.color ||
@@ -60,10 +81,10 @@ export default function SectionsView() {
     );
   };
 
-  const selectedSection = searchParams.get("section") || "";
+  const selectedSection = sectionParam || searchParams.get("section") || "";
   const setSection = (section) => {
-    if (section) setSearchParams({ section });
-    else setSearchParams({});
+    if (section) navigate(`/sections/${encodeURIComponent(section)}`);
+    else navigate(`/sections`);
   };
 
   const renderDetailsModal = () => {

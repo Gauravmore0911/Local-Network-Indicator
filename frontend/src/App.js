@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { socket } from "./socket";
+import { socket, SOCKET_URL } from "./socket.jsx";
 import "bootstrap/dist/css/bootstrap.min.css";
-import "./App.css";
 import logo from "./assets/logo.png";
 import { useNavigate } from "react-router-dom";
 import { Funnel } from "react-bootstrap-icons";
@@ -32,7 +31,38 @@ const App = () => {
   // ✅ Debounced search value for smoother filter typing
   const debouncedSearchValue = useDebounce(searchValue, 300);
 
+  const StatusDot = ({ color }) => {
+    const bg = color === "green" ? "#28a745" : color === "orange" ? "#fd7e14" : "#dc3545";
+    return (
+      <span
+        style={{
+          display: "inline-block",
+          height: 14,
+          width: 14,
+          borderRadius: "50%",
+          marginRight: 6,
+          border: "1px solid #333",
+          verticalAlign: "middle",
+          backgroundColor: bg,
+        }}
+      />
+    );
+  };
+
   // --- SOCKET.IO NETWORK STATUS ---
+  useEffect(() => {
+    const API_BASE = SOCKET_URL === "/" ? "" : SOCKET_URL;
+    fetch(`${API_BASE}/api/machines`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.data?.machines) {
+          setMachines(j.data.machines);
+          setLastUpdated(new Date().toLocaleTimeString());
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     const handleNetwork = (data) => {
       // ✅ Prevent unnecessary re-renders (only update if data changed)
@@ -56,13 +86,13 @@ const App = () => {
   const renderStatus = (result) => {
     if (!result)
       return (
-        <td className="text-center status-cell">
-          <span className="status-dot red"></span> N/A
+        <td className="text-center" style={{ fontWeight: 500, fontSize: "0.9rem" }}>
+          <StatusDot color="red" /> N/A
         </td>
       );
     return (
-      <td className="text-center status-cell">
-        <span className={`status-dot ${result.color}`}></span>{" "}
+      <td className="text-center" style={{ fontWeight: 500, fontSize: "0.9rem" }}>
+        <StatusDot color={result.color} />{" "}
         {result.alive ? `${result.ip} (${result.ping} ms)` : "DOWN"}
       </td>
     );
@@ -134,7 +164,7 @@ const App = () => {
     <div className="container mt-3">
       {/* HEADER */}
       <div className="d-flex align-items-center mb-3">
-        <img src={logo} alt="Logo" className="logo me-3" />
+        <img src={logo} alt="Logo" className="me-3" style={{ height: 70, objectFit: "contain" }} />
         <h2 className="text-primary flex-grow-1 text-center">
           Local Network Status
         </h2>
@@ -176,16 +206,10 @@ const App = () => {
             <span className="text-muted">
               Last updated: {lastUpdated || "--:--:--"}
             </span>
-            <div className="legend d-flex gap-3 mt-1 small">
-              <div>
-                <span className="status-dot green"></span> Healthy (≤10ms)
-              </div>
-              <div>
-                <span className="status-dot orange"></span> Warning (10–100ms)
-              </div>
-              <div>
-                <span className="status-dot red"></span> Offline / {"100ms"}
-              </div>
+            <div className="d-flex gap-3 mt-1 small">
+              <div><StatusDot color="green" /> Healthy (≤10ms)</div>
+              <div><StatusDot color="orange" /> Warning (10–100ms)</div>
+              <div><StatusDot color="red" /> Offline / {"100ms"}</div>
             </div>
           </div>
         </div>
@@ -233,8 +257,8 @@ const App = () => {
       )}
 
       {/* TABLE */}
-      <table className="table table-bordered table-striped align-middle blue-theme-table mt-3">
-        <thead className="table-primary text-center">
+      <table className="table table-bordered table-striped align-middle mt-3" style={{ backgroundColor: "#fff", border: "2px solid #007bff" }}>
+        <thead className="text-center" style={{ backgroundColor: "#1d349a", color: "white" }}>
           <tr>
             <th>Sr.No</th>
             <th>Machine Name</th>
