@@ -1,33 +1,84 @@
+// SectionsView.jsx (Final Grid Layout with Active Status in Modal)
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams, useParams } from "react-router-dom";
 import { socket, SOCKET_URL } from "./socket.jsx";
 import "bootstrap/dist/css/bootstrap.min.css";
 
+// --- CSS Keyframes for Blinking/Pulsing Effect ---
+const BLINK_KEYFRAMES = `
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+`;
+
+// --- StatusDot Component (Still needed for the grid view) ---
 const StatusDot = ({ color }) => {
   const bg = color === "green" ? "#28a745" : color === "orange" ? "#fd7e14" : "#dc3545";
+  const isBlinking = color === 'green' || color === 'red';
+
+  const blinkStyle = isBlinking
+    ? {
+        animation: "blink 1s step-start infinite",
+      }
+    : {};
+
   return (
-    <span
-      style={{
-        display: "inline-block",
-        height: 14,
-        width: 14,
-        borderRadius: "50%",
-        marginLeft: 6,
-        border: "1px solid #333",
-        verticalAlign: "middle",
-        backgroundColor: bg,
-      }}
-    />
+    <>
+      <style>{BLINK_KEYFRAMES}</style>
+      <span
+        style={{
+          display: "inline-block",
+          height: 12, 
+          width: 12,
+          borderRadius: "50%",
+          marginLeft: 6,
+          border: "1px solid #333",
+          verticalAlign: "middle",
+          backgroundColor: bg,
+          boxShadow: '0 0 4px rgba(0,0,0,0.2)',
+          ...blinkStyle,
+        }}
+      />
+    </>
   );
 };
 
+// --- Switch Info Parser (Unchanged) ---
+const parseSwitchInfo = (uplink) => {
+  if (!uplink) return null;
+  const match = uplink.match(/^([A-Z])(\d+)-(\d+)$/i);
+  if (!match) return null;
+  return {
+    bay: match[1].toUpperCase(),
+    column: Number(match[2]),
+    ports: Number(match[3]),
+  };
+};
+
+// --- Machine Card Styles (Unchanged) ---
+const machineCardStyle = {
+  cursor: "pointer",
+  fontSize: "12px",
+  transition: "transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out",
+};
+const machineCardHoverStyle = {
+  transform: "translateY(-1px)",
+  boxShadow: "0 4px 6px rgba(0,0,0,0.1)",
+  backgroundColor: "#fefefe",
+};
+
+
+// --- Main Component ---
 export default function SectionsView() {
   const [machines, setMachines] = useState([]);
-  const [filterBySection, setFilterBySection] = useState({});
   const [selectedMachine, setSelectedMachine] = useState(null);
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [hoveredMachineName, setHoveredMachineName] = useState(null); 
+  const [searchParams] = useSearchParams();
   const { section: sectionParam } = useParams();
   const navigate = useNavigate();
+  
+  const MAX_COLUMNS = 50; 
 
   useEffect(() => {
     const API_BASE = SOCKET_URL === "/" ? "" : SOCKET_URL;
@@ -40,13 +91,7 @@ export default function SectionsView() {
   }, []);
 
   useEffect(() => {
-    const handleNetwork = (data) => {
-      setMachines((prev) => {
-        if (JSON.stringify(prev) === JSON.stringify(data.machines)) return prev;
-        return data.machines;
-      });
-    };
-
+    const handleNetwork = (data) => setMachines(data.machines);
     socket.on("network-status", handleNetwork);
     return () => socket.off("network-status", handleNetwork);
   }, []);
@@ -59,88 +104,176 @@ export default function SectionsView() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedMachine]);
 
-  const grouped = useMemo(() => {
-    const map = new Map();
-    for (const m of machines) {
-      const key = m.section || "Unknown";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(m);
-    }
-    for (const [_k, arr] of map) {
-      arr.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    }
-    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  /** 1. Generate Switches Automatically from uplink (Unchanged) */
+  const switches = useMemo(() => {
+    const map = {};
+    const sections = new Set(); 
+
+    machines.forEach((m) => {
+      if (m.section) sections.add(m.section);
+      
+      const sw = parseSwitchInfo(m.uplink);
+      if (!sw) return;
+
+      if (!map[m.uplink]) {
+        map[m.uplink] = {
+          id: m.uplink,
+          bay: sw.bay,
+          column: sw.column,
+          ports: sw.ports,
+          connected: [],
+          section: m.section 
+        };
+      }
+      map[m.uplink].connected.push(m);
+    });
+
+    sections.forEach(sectionName => {
+      const mainSwitchId = `${sectionName}_MAIN`;
+      map[mainSwitchId] = {
+        id: "MAIN SWITCH",
+        bay: "A",       
+        column: 1,      
+        ports: 'N/A',
+        section: sectionName,
+        connected: [], 
+      };
+    });
+
+    return map;
   }, [machines]);
 
-  const getOverallColor = (m) => {
-    return (
-      m.results?.ip?.color ||
-      m.results?.gateway?.color ||
-      m.results?.kiosk_pc?.color ||
-      "red"
-    );
-  };
+
+  /** 2. Organize into GRID (Unchanged) */
+  /** 2. Organize into GRID (STRICT LOCATION PRIORITY LOGIC) */
+    const grid = useMemo(() => {
+        const layout = {};
+        // Switch locations are still needed to render the switches themselves
+        const switchLocations = Object.values(switches).reduce((acc, sw) => {
+          acc[sw.id] = { bay: sw.bay, column: sw.column, section: sw.section };
+          return acc;
+        }, {});
+    
+        machines.forEach((m) => {
+          const section = m.section || "Unknown";
+          let bay;
+          let col;
+    
+          // --- CORE LOCATION LOGIC: New fields override old fields ---
+          
+          // PRIORITY 1: Check for the new explicit location fields
+          if (m.machine_row && m.machine_column) {
+              bay = m.machine_row;
+              col = Number(m.machine_column);
+          } 
+          // PRIORITY 2: FALLBACK to the machine's existing location fields (as is)
+          else {
+              // Use m.bay and m.column. If they are also missing, default to "0" and 0.
+              bay = m.bay || "0";
+              col = Number(m.column || 0);
+          }
+          // -----------------------------------------------------------
+    
+          if (!layout[section]) layout[section] = {};
+          if (!layout[section][bay]) layout[section][bay] = {};
+          if (!layout[section][bay][col]) layout[section][bay][col] = [];
+    
+          layout[section][bay][col].push(m);
+        });
+        
+        Object.keys(layout).forEach(section => {
+            // Ensure Main Switch position (A1) is available
+            if (!layout[section]['A']) layout[section]['A'] = {};
+            if (!layout[section]['A'][1]) layout[section]['A'][1] = [];
+        });
+    
+        return layout;
+      }, [machines, switches]);
+
+
+  // --- Helper Functions ---
+  const getOverallColor = (m) =>
+    m.results?.ip?.color || m.results?.gateway?.color || m.results?.kiosk_pc?.color || "red";
 
   const selectedSection = sectionParam || searchParams.get("section") || "";
   const setSection = (section) => {
-    if (section) navigate(`/sections/${encodeURIComponent(section)}`);
-    else navigate(`/sections`);
+    navigate(section ? `/sections/${encodeURIComponent(section)}` : `/sections`);
   };
 
+  // --- Modal Renderer (***ADDED ACTIVE STATUS***) ---
   const renderDetailsModal = () => {
     if (!selectedMachine) return null;
     const m = selectedMachine;
+    
+    // Determine overall status
+    const overallColor = getOverallColor(m);
+    const isActive = overallColor === 'green';
+
+    const dataList = [
+      { label: 'IP Address', value: m.ip || m.results?.ip?.ip || "-" },
+      { label: 'Gateway', value: m.gateway || m.results?.gateway?.ip || "-" },
+      { label: 'Kiosk PC', value: m.kiosk_pc || m.results?.kiosk_pc?.ip || "-" },
+      { label: 'Section', value: m.section || "-" },
+      { label: 'Bay', value: m.bay || "-" },
+      { label: 'Column', value: m.column || "-" },
+      { label: 'Uplink ID', value: m.uplink || "-" },
+      { label: 'Source Switch', value: m.source_switch || "-" },
+    ];
+  
     return (
-      <div className="modal fade show" style={{ display: "block" }} tabIndex="-1" role="dialog">
-        <div className="modal-dialog modal-lg" role="document" onClick={(e) => e.stopPropagation()}>
-          <div className="modal-content">
-            <div className="modal-header">
-              <h5 className="modal-title">{m.name}</h5>
-              <button type="button" className="btn-close" onClick={() => setSelectedMachine(null)}></button>
+      <div className="modal fade show" style={{ display: "block", backgroundColor: 'rgba(0,0,0,0.4)' }} tabIndex="-1" role="dialog">
+        <div className="modal-dialog modal-lg modal-dialog-centered" role="document" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content shadow-lg" style={{ borderRadius: 8 }}>
+            
+            {/* Header: Bright Blue background */}
+            <div className="modal-header bg-primary text-white p-3" style={{ borderBottom: 'none' }}>
+              <h5 className="modal-title fw-bold" style={{ fontSize: '1.4rem' }}>{m.name} Details</h5>
+              <button type="button" className="btn-close btn-close-white" onClick={() => setSelectedMachine(null)}></button>
             </div>
-            <div className="modal-body">
-              <div className="row g-3">
-                <div className="col-md-4">
-                  <div className="card p-2">
-                    <div className="d-flex justify-content-between"><span>Machine IP</span><StatusDot color={m.results?.ip?.color} /></div>
-                    <div className="fw-semibold">{m.results?.ip?.ip || "-"}</div>
-                    <div className="text-muted small">{m.results?.ip?.alive ? `${m.results?.ip?.ping} ms` : "DOWN"}</div>
-                  </div>
-                </div>
-                <div className="col-md-4">
-                  <div className="card p-2">
-                    <div className="d-flex justify-content-between"><span>Gateway</span><StatusDot color={m.results?.gateway?.color} /></div>
-                    <div className="fw-semibold">{m.results?.gateway?.ip || "-"}</div>
-                    <div className="text-muted small">{m.results?.gateway?.alive ? `${m.results?.gateway?.ping} ms` : "DOWN"}</div>
-                  </div>
-                </div>
-                <div className="col-md-4">
-                  <div className="card p-2">
-                    <div className="d-flex justify-content-between"><span>Kiosk</span><StatusDot color={m.results?.kiosk_pc?.color} /></div>
-                    <div className="fw-semibold">{m.results?.kiosk_pc?.ip || "-"}</div>
-                    <div className="text-muted small">{m.results?.kiosk_pc?.alive ? `${m.results?.kiosk_pc?.ping} ms` : "DOWN"}</div>
-                  </div>
+            
+            <div className="modal-body p-0"> 
+              
+              {/* === Machine Active Status Indicator === */}
+              <div className="p-3 border-bottom" style={{ 
+                    backgroundColor: isActive ? '#d4edda' : '#f8d7da', // Green or Red background for high visibility
+                    color: isActive ? '#155724' : '#721c24' // Matching text color
+                }}>
+                <h5 className="fw-bolder mb-0 d-flex align-items-center">
+                    <i className={`bi me-2 ${isActive ? 'bi-check-circle-fill' : 'bi-x-octagon-fill'}`} style={{ fontSize: '1.5rem' }}></i>
+                    Status: {isActive ? 'ACTIVE (Online)' : 'INACTIVE (Offline)'}
+                </h5>
+              </div>
+              
+              {/* Primary Network Info Section - Light Blue/Gray Background */}
+              <div className="p-4" style={{ backgroundColor: '#f0f8ff' }}> 
+                <h6 className="text-secondary fw-semibold mb-3" style={{ fontSize: '1rem' }}>Primary Network Info</h6>
+                <div className="row g-4"> 
+                  {dataList.slice(0, 3).map((item, index) => (
+                    <div className="col-4" key={index}> 
+                      <strong className="d-block text-muted small mb-1">{item.label}</strong>
+                      <span className="fw-semibold text-dark" style={{ fontSize: '1.1rem' }}>{item.value}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
-              <div className="row g-3 mt-2">
-                <div className="col-md-12">
-                  <table className="table table-sm">
-                    <tbody>
-                      <tr><th style={{width:160}}>Name</th><td>{m.name || "-"}</td></tr>
-                      <tr><th>Machine IP</th><td>{m.ip || m.results?.ip?.ip || "-"}</td></tr>
-                      <tr><th>Gateway</th><td>{m.gateway || m.results?.gateway?.ip || "-"}</td></tr>
-                      <tr><th>Kiosk PC</th><td>{m.kiosk_pc || m.results?.kiosk_pc?.ip || "-"}</td></tr>
-                      <tr><th>Uplink</th><td>{m.uplink || "-"}</td></tr>
-                      <tr><th>Source Switch</th><td>{m.source_switch || "-"}</td></tr>
-                      <tr><th>Column</th><td>{m.column || "-"}</td></tr>
-                      <tr><th>Bay</th><td>{m.bay || "-"}</td></tr>
-                      <tr><th>Section</th><td>{m.section || "-"}</td></tr>
-                    </tbody>
-                  </table>
+
+              {/* Physical Location Section - White Background */}
+              <div className="p-4">
+                <h6 className="text-secondary fw-semibold mb-3" style={{ fontSize: '1rem' }}>Physical Location & Uplink</h6>
+                <div className="row g-4">
+                  {dataList.slice(3).map((item, index) => (
+                    <div className="col-4" key={index}> 
+                        <strong className="d-block text-muted small mb-1">{item.label}</strong>
+                        <span className="fw-semibold text-dark" style={{ fontSize: '1.1rem' }}>{item.value}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
-            <div className="modal-footer">
+            
+            {/* Footer */}
+            <div className="modal-footer d-flex justify-content-end p-3" style={{ borderTop: '1px solid #dee2e6' }}>
               <button type="button" className="btn btn-secondary" onClick={() => setSelectedMachine(null)}>Close</button>
             </div>
           </div>
@@ -150,62 +283,153 @@ export default function SectionsView() {
     );
   };
 
+  // --- Render Method (Unchanged) ---
   return (
-    <div className="container mt-3">
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h3 className="text-primary mb-0">Machines by Section</h3>
+    <div className="container-fluid mt-4">
+      {/* Header and Controls */}
+      <div className="d-flex justify-content-between align-items-center mb-4 border-bottom pb-2">
+        <h3 className="text-primary fw-light">
+          <i className="bi bi-diagram-3 me-2"></i>SCADA View
+        </h3>
         <div className="d-flex gap-2">
-          <button className="btn btn-outline-primary" onClick={() => navigate("/")}>Table View</button>
-          <button className="btn btn-warning" onClick={() => navigate("/yaml-editor")}>Edit YAML</button>
+          <button 
+            className="btn btn-outline-primary" 
+            onClick={() => navigate("/")}
+            title="Switch to list view"
+          >
+            <i className="bi bi-table me-1"></i>Table View
+          </button>
+          <button className="btn btn-warning" onClick={() => navigate("/yaml-editor")}>
+            <i className="bi bi-code-slash me-1"></i>Edit YAML
+          </button>
         </div>
       </div>
 
-      {grouped
-        .filter(([section]) => !selectedSection || section === selectedSection)
-        .map(([section, items]) => {
-          const q = (filterBySection[section] || "").toLowerCase();
-          const filtered = q
-            ? items.filter(
-                (m) =>
-                  (m.name || "").toLowerCase().includes(q) ||
-                  (m.results?.ip?.ip || "").toLowerCase().includes(q) ||
-                  (m.results?.gateway?.ip || "").toLowerCase().includes(q) ||
-                  (m.results?.kiosk_pc?.ip || "").toLowerCase().includes(q)
-              )
-            : items;
-          return (
-        <div key={section} className="card mb-3 shadow-sm">
-          <div className="card-header fw-semibold d-flex align-items-center justify-content-between">
-            <span role="button" onClick={() => setSection(section)}>Section {section}</span>
-            <input
-              className="form-control"
-              placeholder="Search in section"
-              style={{ maxWidth: 260 }}
-              value={filterBySection[section] || ""}
-              onChange={(e) =>
-                setFilterBySection((s) => ({ ...s, [section]: e.target.value }))
-              }
-            />
-          </div>
-          <div className="card-body">
-            <div className="d-flex flex-wrap gap-2">
-              {filtered.map((m, idx) => (
-                <div
-                  key={`${m.name}-${idx}`}
-                  className="badge bg-light text-dark border shadow-sm p-3 d-flex align-items-center"
-                  style={{ borderRadius: 12, minWidth: 140, justifyContent: "space-between" }}
-                  title={`${m.name}\nIP: ${m.results?.ip?.ip || "-"}\nGW: ${m.results?.gateway?.ip || "-"}\nKiosk: ${m.results?.kiosk_pc?.ip || "-"}`}
-                  onClick={() => setSelectedMachine(m)}
-                >
-                  <span className="fw-semibold">{m.name}</span>
-                  <StatusDot color={getOverallColor(m)} />
-                </div>
-              ))}
-            </div>
+      {/* Section Loop - Renders one table per section */}
+      {Object.entries(grid).map(([section, bays]) => 
+        (!selectedSection || section === selectedSection) && (
+        <div key={section} className="mb-5 p-3 rounded-3 shadow-sm bg-light">
+          <h4 className="fw-bolder text-dark mb-3 border-bottom pb-2">
+            <i className="bi bi-building me-2 text-primary"></i>SECTION: {section}
+          </h4>
+
+          <div style={{ overflowX: "auto" }}>
+            <table
+              className="table table-bordered text-center align-middle"
+              style={{ minWidth: `${MAX_COLUMNS * 100}px`, borderSpacing: "0", borderCollapse: "separate" }}
+            >
+              <thead>
+                <tr className="bg-white">
+                  <th style={{ width: "50px" }} className="fw-bold">Bay</th>
+                  {/* Column Headers (1 to MAX_COLUMNS) */}
+                  {Array.from({ length: MAX_COLUMNS }, (_, i) => (
+                    <th key={i} style={{ width: "30px", fontSize: "10px", padding: "4px" }} className="text-muted fw-normal">
+                      C{i + 1}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {/* Bay Loop (Table Rows) - CUSTOM SORTING: Letters (A-Z) first, then numbers/others */}
+                {Object.entries(bays)
+                    .sort(([bayA], [bayB]) => {
+                        const isLetterA = /^[A-Z]$/i.test(bayA);
+                        const isLetterB = /^[A-Z]$/i.test(bayB);
+
+                        if (isLetterA && !isLetterB) {
+                            return -1; 
+                        }
+                        if (!isLetterA && isLetterB) {
+                            return 1;  
+                        }
+                        
+                        return bayA.localeCompare(bayB, undefined, { numeric: true }); 
+                    })
+                    .map(([bay, columns]) => (
+                  <tr key={bay}>
+                    <td className="fw-bold bg-secondary text-white">{bay}</td>
+
+                    {/* Column Loop (Table Cells) */}
+                    {Array.from({ length: MAX_COLUMNS }, (_, colIndex) => {
+                      const col = colIndex + 1;
+                      let items = columns[col] || [];
+
+                      // --- Switch Lookup ---
+                      const regularSwitchHere = Object.values(switches).find(
+                        (sw) => sw.bay === bay && sw.column === col && sw.section === section && sw.id !== "MAIN SWITCH"
+                      );
+                        
+                      const mainSwitchHere = 
+                        bay === "A" && col === 1 && 
+                        Object.values(switches).find(sw => sw.section === section && sw.id === "MAIN SWITCH");
+                        
+                      const switchHere = regularSwitchHere || mainSwitchHere; 
+                      // --- End Switch Lookup ---
+
+                      return (
+                        <td
+                          key={col}
+                          style={{
+                            padding: 4,
+                            minWidth: 100,
+                            verticalAlign: "top",
+                            backgroundColor: (items.length > 0 || switchHere) ? '#f8f9fa' : 'transparent',
+                          }}
+                        >
+                          {/* ✅ Show Switch */}
+                          {switchHere && (
+                            <div
+                              className={
+                                switchHere.id === "MAIN SWITCH"
+                                  ? "p-1 bg-danger text-white rounded border mb-2 fw-bolder shadow-lg" 
+                                  : "p-1 bg-info text-dark rounded border border-dark mb-2 fw-bold shadow-sm"
+                              }
+                              style={{ fontSize: "11px" }}
+                            >
+                              {switchHere.id === "MAIN SWITCH" ? (
+                                <>
+                                  <i className="bi bi-gear-fill me-1"></i>
+                                  MAIN SWITCH
+                                </>
+                              ) : (
+                                <>
+                                  <i className="bi bi-diagram-3 me-1"></i>SW: {switchHere.id} <br />
+                                  <span className="fw-normal">Ports: {switchHere.ports}</span>
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          {/* ✅ Show Machines */}
+                          {items.length > 0 &&
+                            items.map((m) => (
+                              <div
+                                key={m.name}
+                                onClick={() => setSelectedMachine(m)}
+                                onMouseEnter={() => setHoveredMachineName(m.name)}
+                                onMouseLeave={() => setHoveredMachineName(null)}
+                                className="p-2 bg-white rounded border mb-1 d-flex align-items-center justify-content-between shadow-sm"
+                                style={
+                                    hoveredMachineName === m.name
+                                      ? { ...machineCardStyle, ...machineCardHoverStyle, borderColor: '#007bff' }
+                                      : machineCardStyle
+                                }
+                              >
+                                <span>{m.name}</span>
+                                <StatusDot color={getOverallColor(m)} />
+                              </div>
+                            ))}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
-          );
-        })}
+      ))}
+
       {renderDetailsModal()}
     </div>
   );
